@@ -18,8 +18,6 @@ import (
 // ========================================================================
 //                          CONFIGURATION SECTION
 // ========================================================================
-//   Пользователь редактирует значения в этом разделе перед компиляцией
-// ========================================================================
 
 // DefaultConfig содержит конфигурационные константы
 type DefaultConfig struct {
@@ -27,6 +25,8 @@ type DefaultConfig struct {
 	StartingDir  string
 	WinTitleFlag string
 	WinTitle     string
+	FzfCommand   string
+	ShellToUse   string
 }
 
 // AppAssociations содержит ассоциации приложений с типами файлов
@@ -41,7 +41,7 @@ type AppAssociations struct {
 	FallbackOpener    string
 }
 
-// Используем константы для часто используемых MIME типов
+// Константы для часто используемых MIME типов
 const (
 	mimeTextPrefix        = "text/"
 	mimeApplicationScript = "application/x-shellscript"
@@ -62,51 +62,121 @@ const (
 )
 
 var (
-	// Основные настройки
 	defaultConfig = DefaultConfig{
-		Terminal:     "alacritty", // ЗДЕСЬ УКАЖИТЕ ВАШ ТЕРМИНАЛ
+		Terminal:     "alacritty",
 		StartingDir:  "~",
 		WinTitleFlag: "--title",
 		WinTitle:     "fzf-open-run",
+		FzfCommand:   "fzf --ansi --prompt='Select file> ' --no-multi",
+		ShellToUse:   "",
 	}
 
-	// Ассоциации приложений - ИЗМЕНИТЕ ЗНАЧЕНИЯ НА СВОИ ПРОГРАММЫ
 	appAssociations = AppAssociations{
-		TextEditor:        "zeditor",         // ЗДЕСЬ УКАЖИТЕ СВОЙ ТЕКСТОВЫЙ РЕДАКТОР
-		PDFViewer:         "zathura",         // ЗДЕСЬ УКАЖИТЕ СВОЙ ПРОСМОТРЩИК PDF
-		ImageViewer:       "eog",             // ЗДЕСЬ УКАЖИТЕ СВОЙ ПРОСМОТРЩИК ИЗОБРАЖЕНИЙ
-		VideoPlayer:       "vlc",             // ЗДЕСЬ УКАЖИТЕ СВОЙ ВИДЕОПЛЕЕР
-		SpreadsheetEditor: "wps",             // ЗДЕСЬ УКАЖИТЕ СВОЙ РЕДАКТОР ТАБЛИЦ
-		WebBrowser:        "thorium-browser", // ЗДЕСЬ УКАЖИТЕ СВОЙ ВЕБ-БРАУЗЕР
-		DocxViewer:        "wps",             // ЗДЕСЬ УКАЖИТЕ СВОЙ ПРОСМОТРЩИК DOCX
-		FallbackOpener:    "xdg-open",        // ЗАПАСНОЙ ОТКРЫВАТЕЛЬ ФАЙЛОВ
+		TextEditor:        "zeditor",
+		PDFViewer:         "zathura",
+		ImageViewer:       "eog",
+		VideoPlayer:       "vlc",
+		SpreadsheetEditor: "wps",
+		WebBrowser:        "thorium-browser",
+		DocxViewer:        "wps",
+		FallbackOpener:    "xdg-open",
 	}
 
-	// Временный файл для вывода fzf
 	tmpFzfOutput = "/tmp/fzf-open"
 
-	// Кэш для результатов LookPath
-	pathCache     = make(map[string]string)
+	pathCache     = make(map[string]string, 10)
 	pathCacheLock sync.RWMutex
+
+	userHomeDir string
+
+	textMimePrefixMatch = strings.HasPrefix
 )
+
+func init() {
+	if u, err := user.Current(); err == nil {
+		userHomeDir = u.HomeDir
+	}
+
+	detectUserShell()
+
+	go func() {
+		commonCommands := []string{"xdg-mime", "sh", "bash", "zsh", "fish", "fzf"}
+		for _, cmd := range commonCommands {
+			if path, err := exec.LookPath(cmd); err == nil {
+				pathCacheLock.Lock()
+				pathCache[cmd] = path
+				pathCacheLock.Unlock()
+			}
+		}
+	}()
+}
+
+// detectUserShell определяет текущую оболочку пользователя и устанавливает ShellToUse
+func detectUserShell() {
+	shellPath := os.Getenv("SHELL")
+	if shellPath != "" {
+		shellName := filepath.Base(shellPath)
+		if isValidShell(shellName) {
+			defaultConfig.ShellToUse = shellName
+			return
+		}
+	}
+
+	possibleShells := []string{"zsh", "bash", "fish", "dash", "sh"}
+	for _, shell := range possibleShells {
+		if _, err := exec.LookPath(shell); err == nil {
+			defaultConfig.ShellToUse = shell
+			return
+		}
+	}
+
+	defaultConfig.ShellToUse = "sh"
+	fmt.Fprintf(os.Stderr, "Warning: Could not detect user shell, falling back to /bin/sh\n")
+}
+
+// isValidShell проверяет, является ли имя оболочки допустимым
+func isValidShell(shellName string) bool {
+	validShells := map[string]bool{
+		"bash": true,
+		"zsh":  true,
+		"fish": true,
+		"dash": true,
+		"sh":   true,
+		"ksh":  true,
+		"csh":  true,
+		"tcsh": true,
+	}
+	return validShells[shellName]
+}
+
+// getShellInteractiveFlag возвращает флаги для интерактивного режима в зависимости от оболочки
+func getShellInteractiveFlag(shellName string) []string {
+	switch shellName {
+	case "fish":
+		return []string{"-c"}
+	case "zsh", "bash", "sh", "dash", "ksh":
+		return []string{"-ic"}
+	default:
+		return []string{"-c"}
+	}
+}
 
 // ========================================================================
 //                        END OF CONFIGURATION SECTION
 // ========================================================================
 
-// Config структура для хранения операционных настроек (флаги и т.д.)
+// Config структура для хранения операционных настроек
 type Config struct {
 	Terminal    string
 	StartingDir string
-	SpawnTerm   bool // Управляется флагом -n
-	NoAutoClose bool // Флаг для предотвращения автоматического закрытия
+	SpawnTerm   bool
+	NoAutoClose bool
+	UseShellIC  bool
 }
 
 func main() {
-	// Инициализация операционной конфигурации
 	cfg := initializeAndParseFlags()
 
-	// Расшифровка стартовой директории
 	startingDir, err := expandPath(cfg.StartingDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error expanding Starting Directory path '%s': %v\n", cfg.StartingDir, err)
@@ -114,7 +184,6 @@ func main() {
 	}
 	cfg.StartingDir = startingDir
 
-	// Получение пути через fzf
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -129,7 +198,6 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Открытие выбранного файла
 	if err := openFileWithConfiguredApp(selectedPath); err != nil {
 		waitForUserIfNoAutoClose(cfg)
 		os.Exit(1)
@@ -153,12 +221,14 @@ func initializeAndParseFlags() *Config {
 		StartingDir: defaultConfig.StartingDir,
 		SpawnTerm:   false,
 		NoAutoClose: false,
+		UseShellIC:  true,
 	}
 
 	flag.BoolVar(&cfg.SpawnTerm, "n", cfg.SpawnTerm, "Spawn fzf in a new terminal window")
 	flag.StringVar(&cfg.StartingDir, "d", cfg.StartingDir, "Starting directory for fzf")
 	flag.StringVar(&cfg.Terminal, "t", cfg.Terminal, "Terminal emulator command")
 	flag.BoolVar(&cfg.NoAutoClose, "k", cfg.NoAutoClose, "Keep window open (don't auto-close)")
+	flag.BoolVar(&cfg.UseShellIC, "i", cfg.UseShellIC, "Use interactive shell mode (-ic flags)")
 
 	flag.Parse()
 	return cfg
@@ -169,23 +239,38 @@ func expandPath(path string) (string, error) {
 	if path == "" {
 		return "", nil
 	}
+
 	if strings.HasPrefix(path, "~") {
-		currentUser, err := user.Current()
-		if err != nil {
-			return "", fmt.Errorf("could not get current user for ~ expansion: %w", err)
+		if userHomeDir != "" {
+			return filepath.Join(userHomeDir, path[1:]), nil
+		} else {
+			currentUser, err := user.Current()
+			if err != nil {
+				return "", fmt.Errorf("could not get current user for ~ expansion: %w", err)
+			}
+			userHomeDir = currentUser.HomeDir
+			return filepath.Join(currentUser.HomeDir, path[1:]), nil
 		}
-		path = filepath.Join(currentUser.HomeDir, path[1:])
 	}
+
 	return os.ExpandEnv(path), nil
 }
 
 // getPathViaFZF запускает fzf и возвращает выбранный абсолютный путь
 func getPathViaFZF(ctx context.Context, cfg *Config) (string, error) {
-	// Проверка StartingDir
 	info, err := os.Stat(cfg.StartingDir)
 	if err != nil || !info.IsDir() {
 		originalDir := cfg.StartingDir
-		fallbackDir, _ := expandPath("~")
+
+		fallbackDir := userHomeDir
+		if fallbackDir == "" {
+			var err error
+			fallbackDir, err = expandPath("~")
+			if err != nil {
+				return "", fmt.Errorf("failed to determine fallback directory: %w", err)
+			}
+		}
+
 		cfg.StartingDir = fallbackDir
 		fmt.Fprintf(os.Stderr, "Warning: STARTING_DIR %q is invalid, falling back to %q\n", originalDir, cfg.StartingDir)
 
@@ -195,51 +280,79 @@ func getPathViaFZF(ctx context.Context, cfg *Config) (string, error) {
 		}
 	}
 
-	// Формирование команды fzf - используем стандартный fzf без предварительной фильтрации
 	fzfCommand := fmt.Sprintf(
-		`cd %q && fzf --ansi --prompt='Select file> ' --no-multi > %q`,
-		cfg.StartingDir,
-		tmpFzfOutput,
+		"cd %s && %s > %s",
+		shellQuote(cfg.StartingDir),
+		defaultConfig.FzfCommand,
+		shellQuote(tmpFzfOutput),
 	)
 
 	var cmd *exec.Cmd
 
 	if cfg.SpawnTerm {
-		// Запуск в новом терминале
-		args := []string{
-			defaultConfig.WinTitleFlag,
-			defaultConfig.WinTitle,
-			"-e",
-			"/bin/sh", "-c",
-			fzfCommand,
+		var args []string
+
+		if cfg.UseShellIC {
+			if defaultConfig.ShellToUse == "" {
+				detectUserShell()
+			}
+
+			shellInteractiveFlags := getShellInteractiveFlag(defaultConfig.ShellToUse)
+
+			args = []string{
+				defaultConfig.WinTitleFlag,
+				defaultConfig.WinTitle,
+				"-e",
+				defaultConfig.ShellToUse,
+			}
+			args = append(args, shellInteractiveFlags...)
+			args = append(args, fzfCommand)
+		} else {
+			args = []string{
+				defaultConfig.WinTitleFlag,
+				defaultConfig.WinTitle,
+				"-e",
+				"/bin/sh", "-c",
+				fzfCommand,
+			}
 		}
+
 		cmd = exec.CommandContext(ctx, cfg.Terminal, args...)
 		err = cmd.Run()
 	} else {
-		// Запуск в текущей среде
-		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", fzfCommand)
+		var shell string
+		var shellArgs []string
+
+		if cfg.UseShellIC && defaultConfig.ShellToUse != "" && defaultConfig.ShellToUse != "sh" {
+			shell = defaultConfig.ShellToUse
+			shellArgs = getShellInteractiveFlag(defaultConfig.ShellToUse)
+			shellArgs = append(shellArgs, fzfCommand)
+		} else {
+			shell = "/bin/sh"
+			shellArgs = []string{"-c", fzfCommand}
+		}
+
+		cmd = exec.CommandContext(ctx, shell, shellArgs...)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		err = cmd.Run()
 	}
 
-	// Обработка ошибок запуска cmd
 	if err != nil {
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			if exitErr.ExitCode() == 130 {
-				return "", nil
-			}
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 130 {
 			return "", nil
 		}
-		fmt.Fprintf(os.Stderr, "Error executing fzf command: %v\n", err)
-		return "", err
+		if !errors.As(err, &exitErr) {
+			fmt.Fprintf(os.Stderr, "Error executing fzf command: %v\n", err)
+		}
+		return "", nil
 	}
 
-	// Чтение результата из файла
-	defer os.Remove(tmpFzfOutput)
 	content, err := os.ReadFile(tmpFzfOutput)
+	defer os.Remove(tmpFzfOutput)
+
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", nil
@@ -253,7 +366,6 @@ func getPathViaFZF(ctx context.Context, cfg *Config) (string, error) {
 		return "", nil
 	}
 
-	// Преобразование в абсолютный путь
 	absolutePath := filepath.Join(cfg.StartingDir, selectedRelativePath)
 	absolutePath, err = filepath.Abs(absolutePath)
 	if err != nil {
@@ -261,13 +373,17 @@ func getPathViaFZF(ctx context.Context, cfg *Config) (string, error) {
 		return "", nil
 	}
 
-	// Проверка существования пути
 	if _, err := os.Stat(absolutePath); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Constructed path does not exist or is inaccessible: %q (%v)\n", absolutePath, err)
 		return "", nil
 	}
 
 	return absolutePath, nil
+}
+
+// shellQuote заключает строку в кавычки для использования в shell командах
+func shellQuote(s string) string {
+	return "\"" + strings.Replace(s, "\"", "\\\"", -1) + "\""
 }
 
 // FileTypeInfo содержит информацию о типе файла
@@ -278,37 +394,108 @@ type FileTypeInfo struct {
 	MIMEType string
 }
 
+// Карты для быстрого поиска по расширению
+var (
+	extToPDFViewer   = map[string]bool{"pdf": true}
+	extToDocxViewer  = map[string]bool{"docx": true, "doc": true}
+	extToImageViewer = map[string]bool{
+		"png": true, "jpg": true, "jpeg": true, "gif": true, "bmp": true,
+		"webp": true, "svg": true, "ico": true, "tif": true, "tiff": true,
+	}
+	extToVideoPlayer = map[string]bool{
+		"flv": true, "avi": true, "mov": true, "mp4": true, "mkv": true, "webm": true,
+		"wmv": true, "mpeg": true, "mpg": true, "mp3": true, "ogg": true, "oga": true,
+		"wav": true, "flac": true, "opus": true, "aac": true, "m4a": true,
+	}
+	extToSpreadsheet = map[string]bool{"csv": true, "tsv": true, "ods": true, "xlsx": true}
+	extToWebBrowser  = map[string]bool{"htm": true, "html": true, "xhtml": true}
+	extToTextEditor  = map[string]bool{
+		"txt": true, "md": true, "markdown": true, "sh": true, "bash": true, "zsh": true,
+		"fish": true, "py": true, "rb": true, "js": true, "jsx": true, "ts": true, "tsx": true,
+		"c": true, "cpp": true, "h": true, "hpp": true, "java": true, "go": true, "rs": true,
+		"php": true, "pl": true, "lua": true, "sql": true, "json": true, "yaml": true, "yml": true,
+		"toml": true, "xml": true, "css": true, "scss": true, "less": true, "conf": true,
+		"cfg": true, "log": true, "ini": true, "desktop": true, "service": true, "env": true,
+		"gitignore": true, "dockerfile": true, "": true,
+	}
+)
+
 // openFileWithConfiguredApp - основная логика выбора приложения
 func openFileWithConfiguredApp(filePath string) error {
-	// Проверка существования файла
-	if _, err := os.Stat(filePath); err != nil {
+	fi, err := os.Stat(filePath)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: File or directory not found: %q (%v)\n", filePath, err)
 		return err
 	}
 
-	// Собираем информацию о файле
-	fileInfo := getFileTypeInfo(filePath)
-
-	// Выбор и запуск приложения только один раз через определение приложения
-	// Используем только одно из определений - по расширению или по MIME типу, но не оба
-	var appToLaunch string
-
-	// Сначала пробуем по расширению
-	appToLaunch = getAppByExtension(fileInfo.Ext, fileInfo.MIMEType)
-
-	// Если по расширению не нашли, пробуем по MIME
-	if appToLaunch == "" && fileInfo.MIMEType != "" {
-		appToLaunch = getAppByMIME(fileInfo.MIMEType)
+	fileInfo := FileTypeInfo{
+		FileName: filepath.Base(filePath),
 	}
 
-	// Запускаем приложение, если его удалось определить
+	if fi.IsDir() {
+		if launchApp(appAssociations.TextEditor, filePath) {
+			return nil
+		}
+		if launchApp(appAssociations.FallbackOpener, filePath) {
+			return nil
+		}
+		return fmt.Errorf("could not open directory %q with any available application", filePath)
+	}
+
+	extWithDot := filepath.Ext(fileInfo.FileName)
+	fileInfo.Ext = strings.ToLower(strings.TrimPrefix(extWithDot, "."))
+
+	if strings.HasPrefix(fileInfo.FileName, ".") && extWithDot == "" {
+		fileInfo.Ext = ""
+	}
+
+	var appToLaunch string
+	if extToPDFViewer[fileInfo.Ext] {
+		appToLaunch = appAssociations.PDFViewer
+	} else if extToDocxViewer[fileInfo.Ext] {
+		appToLaunch = appAssociations.DocxViewer
+	} else if extToImageViewer[fileInfo.Ext] {
+		appToLaunch = appAssociations.ImageViewer
+	} else if extToVideoPlayer[fileInfo.Ext] {
+		appToLaunch = appAssociations.VideoPlayer
+	} else if extToSpreadsheet[fileInfo.Ext] {
+		appToLaunch = appAssociations.SpreadsheetEditor
+	} else if extToWebBrowser[fileInfo.Ext] {
+		appToLaunch = appAssociations.WebBrowser
+	} else if extToTextEditor[fileInfo.Ext] {
+		if fileInfo.Ext == "" {
+			fileInfo.MIMEType = getMimeType(filePath)
+
+			if fileInfo.MIMEType == "" ||
+				textMimePrefixMatch(fileInfo.MIMEType, mimeTextPrefix) ||
+				fileInfo.MIMEType == mimeApplicationScript ||
+				fileInfo.MIMEType == mimeApplicationJS ||
+				fileInfo.MIMEType == mimeApplicationJSON ||
+				fileInfo.MIMEType == mimeApplicationXML ||
+				fileInfo.MIMEType == mimeInodeEmpty {
+				appToLaunch = appAssociations.TextEditor
+			}
+		} else {
+			appToLaunch = appAssociations.TextEditor
+		}
+	}
+
+	if appToLaunch == "" {
+		if fileInfo.MIMEType == "" {
+			fileInfo.MIMEType = getMimeType(filePath)
+		}
+
+		if fileInfo.MIMEType != "" {
+			appToLaunch = getAppByMIME(fileInfo.MIMEType)
+		}
+	}
+
 	if appToLaunch != "" {
 		if launchApp(appToLaunch, filePath) {
 			return nil
 		}
 	}
 
-	// Fallback если не определили приложение или не смогли запустить
 	fmt.Fprintf(os.Stderr, "Info: No specific rule matched for %q (MIME: %q). Falling back to %q...\n",
 		fileInfo.FileName, fileInfo.MIMEType, appAssociations.FallbackOpener)
 
@@ -319,18 +506,16 @@ func openFileWithConfiguredApp(filePath string) error {
 	return nil
 }
 
-// getFileTypeInfo собирает информацию о файле
+// getFileTypeInfo собирает информацию о файле - оставлено для обратной совместимости
 func getFileTypeInfo(filePath string) FileTypeInfo {
 	fileName := filepath.Base(filePath)
 	extWithDot := filepath.Ext(fileName)
 	extLower := strings.ToLower(strings.TrimPrefix(extWithDot, "."))
 
-	// Особая обработка для файлов типа ".bashrc" (скрытый без расширения)
 	if strings.HasPrefix(fileName, ".") && extWithDot == "" {
 		extLower = ""
 	}
 
-	// Получаем MIME тип только если это не директория
 	var mimeType string
 	if fi, err := os.Stat(filePath); err == nil && !fi.IsDir() {
 		mimeType = getMimeType(filePath)
@@ -344,7 +529,7 @@ func getFileTypeInfo(filePath string) FileTypeInfo {
 	}
 }
 
-// getAppByExtension определяет приложение по расширению файла
+// getAppByExtension определяет приложение по расширению файла - оставлено для обратной совместимости
 func getAppByExtension(ext, mimeType string) string {
 	switch ext {
 	case "pdf":
@@ -401,14 +586,28 @@ func getAppByMIME(mimeType string) string {
 	return ""
 }
 
+// Кэш для MIME типов
+var (
+	mimeCache     = make(map[string]string, 20)
+	mimeCacheLock sync.RWMutex
+)
+
 // getMimeType получает MIME тип файла с помощью xdg-mime
 func getMimeType(filePath string) string {
+	mimeCacheLock.RLock()
+	cachedMime, ok := mimeCache[filePath]
+	mimeCacheLock.RUnlock()
+
+	if ok {
+		return cachedMime
+	}
+
 	xdgMimePath, err := cachedLookPath("xdg-mime")
 	if err != nil {
 		return ""
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, xdgMimePath, "query", "filetype", filePath)
@@ -417,10 +616,16 @@ func getMimeType(filePath string) string {
 		return ""
 	}
 
-	return strings.TrimSpace(string(output))
+	mimeType := strings.TrimSpace(string(output))
+
+	mimeCacheLock.Lock()
+	mimeCache[filePath] = mimeType
+	mimeCacheLock.Unlock()
+
+	return mimeType
 }
 
-// cachedLookPath кэширует результаты exec.LookPath для улучшения производительности
+// cachedLookPath кэширует результаты exec.LookPath
 func cachedLookPath(name string) (string, error) {
 	pathCacheLock.RLock()
 	path, ok := pathCache[name]
@@ -430,7 +635,6 @@ func cachedLookPath(name string) (string, error) {
 		return path, nil
 	}
 
-	// Если не найдено в кэше, ищем и добавляем
 	path, err := exec.LookPath(name)
 	if err != nil {
 		return "", err
@@ -460,12 +664,17 @@ func launchApp(appCommand string, filePath string) bool {
 		return false
 	}
 
-	finalArgs := append(appArgs, filePath)
+	finalArgs := make([]string, 0, len(appArgs)+1)
+	finalArgs = append(finalArgs, appArgs...)
+	finalArgs = append(finalArgs, filePath)
+
 	cmd := exec.Command(appPath, finalArgs...)
 
-	// Установка группы процесса для предотвращения наследования сигналов
-	// Отключаем привязку к родительскому процессу
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
 
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error starting application %q for file %q: %v\n", appCommand, filePath, err)
