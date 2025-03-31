@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"os/user"
@@ -79,53 +78,41 @@ type Config struct {
 }
 
 func main() {
-	// Настройка логгера
-	log.SetFlags(log.Lshortfile)
-
 	// Инициализация операционной конфигурации
 	cfg := initializeAndParseFlags()
 
 	// Расшифровка стартовой директории
 	startingDir, err := expandPath(cfg.StartingDir)
 	if err != nil {
-		log.Printf("Error expanding Starting Directory path '%s': %v", cfg.StartingDir, err)
+		fmt.Fprintf(os.Stderr, "Error expanding Starting Directory path '%s': %v\n", cfg.StartingDir, err)
 		os.Exit(1)
 	}
 	cfg.StartingDir = startingDir
-	log.Printf("Starting directory resolved to: %s", cfg.StartingDir)
 
 	// Проверка запуска из терминала
 	isTerminal := isRunningInTerminal()
-	log.Printf("Running in terminal: %t", isTerminal)
 
 	// Получение пути через fzf
-	log.Println("Getting path via FZF...")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	selectedPath, err := getPathViaFZF(ctx, cfg, isTerminal)
 	if err != nil {
-		log.Println("getPathViaFZF returned an error or user cancelled:", err)
 		waitForUserIfNoAutoClose(cfg)
 		os.Exit(0)
 	}
 
 	if selectedPath == "" {
-		log.Println("No path selected from FZF.")
 		waitForUserIfNoAutoClose(cfg)
 		os.Exit(0)
 	}
-	log.Printf("Path selected: %s", selectedPath)
 
 	// Открытие выбранного файла
-	log.Printf("Attempting to open: %s", selectedPath)
 	if err := openFileWithConfiguredApp(selectedPath); err != nil {
-		log.Printf("Failed to open file: %v", err)
 		waitForUserIfNoAutoClose(cfg)
 		os.Exit(1)
 	}
 
-	log.Println("File opening process initiated successfully.")
 	waitForUserIfNoAutoClose(cfg)
 }
 
@@ -141,7 +128,6 @@ func waitForUserIfNoAutoClose(cfg *Config) {
 func isRunningInTerminal() bool {
 	fileInfo, err := os.Stdin.Stat()
 	if err != nil {
-		log.Printf("Error checking if running in terminal: %v", err)
 		return false
 	}
 	return (fileInfo.Mode() & os.ModeCharDevice) != 0
@@ -191,7 +177,6 @@ func getPathViaFZF(ctx context.Context, cfg *Config, isTerminal bool) (string, e
 		fallbackDir, _ := expandPath("~")
 		cfg.StartingDir = fallbackDir
 		fmt.Fprintf(os.Stderr, "Warning: STARTING_DIR %q is invalid, falling back to %q\n", originalDir, cfg.StartingDir)
-		log.Printf("Warning: STARTING_DIR %q is invalid, falling back to %q", originalDir, cfg.StartingDir)
 
 		infoFallback, errFallback := os.Stat(cfg.StartingDir)
 		if errFallback != nil || !infoFallback.IsDir() {
@@ -205,18 +190,14 @@ func getPathViaFZF(ctx context.Context, cfg *Config, isTerminal bool) (string, e
 		cfg.StartingDir,
 		tmpFzfOutput,
 	)
-	log.Printf("FZF command to be executed: %s", fzfCommand)
 
 	var cmd *exec.Cmd
 
 	// Определяем режим запуска
 	shouldUseNewTerminal := (!isTerminal && !cfg.ForceTermUI) || cfg.SpawnTerm
-	log.Printf("Should use new terminal for FZF: %t (isTerminal=%t, ForceTermUI=%t, SpawnTerm=%t)",
-		shouldUseNewTerminal, isTerminal, cfg.ForceTermUI, cfg.SpawnTerm)
 
 	if shouldUseNewTerminal {
 		// Запуск в новом терминале
-		log.Printf("Spawning FZF in new terminal: %s", cfg.Terminal)
 		args := []string{
 			defaultConfig.WinTitleFlag,
 			defaultConfig.WinTitle,
@@ -228,7 +209,6 @@ func getPathViaFZF(ctx context.Context, cfg *Config, isTerminal bool) (string, e
 		err = cmd.Run()
 	} else {
 		// Запуск в текущей среде
-		log.Println("Running FZF in current environment")
 		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", fzfCommand)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
@@ -238,13 +218,10 @@ func getPathViaFZF(ctx context.Context, cfg *Config, isTerminal bool) (string, e
 
 	// Обработка ошибок запуска cmd
 	if err != nil {
-		log.Printf("FZF command execution failed: %v", err)
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			if exitErr.ExitCode() == 130 {
-				log.Println("FZF cancelled by user (exit code 130).")
 				return "", nil
 			}
-			log.Printf("FZF exited with non-zero code: %d", exitErr.ExitCode())
 			return "", nil
 		}
 		fmt.Fprintf(os.Stderr, "Error executing fzf command: %v\n", err)
@@ -255,9 +232,7 @@ func getPathViaFZF(ctx context.Context, cfg *Config, isTerminal bool) (string, e
 	defer os.Remove(tmpFzfOutput)
 	content, err := os.ReadFile(tmpFzfOutput)
 	if err != nil {
-		log.Printf("Error reading fzf output file %q: %v", tmpFzfOutput, err)
 		if errors.Is(err, os.ErrNotExist) {
-			log.Println("FZF output file does not exist.")
 			return "", nil
 		}
 		fmt.Fprintf(os.Stderr, "Error reading fzf output file %q: %v\n", tmpFzfOutput, err)
@@ -266,24 +241,19 @@ func getPathViaFZF(ctx context.Context, cfg *Config, isTerminal bool) (string, e
 
 	selectedRelativePath := strings.TrimSpace(string(content))
 	if selectedRelativePath == "" {
-		log.Println("FZF output file was empty.")
 		return "", nil
 	}
-	log.Printf("Relative path from FZF: %s", selectedRelativePath)
 
 	// Преобразование в абсолютный путь
 	absolutePath := filepath.Join(cfg.StartingDir, selectedRelativePath)
 	absolutePath, err = filepath.Abs(absolutePath)
 	if err != nil {
-		log.Printf("Error making path absolute %q: %v", absolutePath, err)
 		fmt.Fprintf(os.Stderr, "Error resolving path %q: %v\n", absolutePath, err)
 		return "", nil
 	}
-	log.Printf("Absolute path constructed: %s", absolutePath)
 
 	// Проверка существования пути
 	if _, err := os.Stat(absolutePath); err != nil {
-		log.Printf("Warning: Constructed path does not exist or is inaccessible: %q (%v)", absolutePath, err)
 		fmt.Fprintf(os.Stderr, "Warning: Constructed path does not exist or is inaccessible: %q (%v)\n", absolutePath, err)
 		return "", nil
 	}
@@ -301,19 +271,14 @@ type FileTypeInfo struct {
 
 // openFileWithConfiguredApp - основная логика выбора приложения
 func openFileWithConfiguredApp(filePath string) error {
-	log.Printf("Determining application for: %s", filePath)
-
 	// Проверка существования файла
 	if _, err := os.Stat(filePath); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: File or directory not found: %q (%v)\n", filePath, err)
-		log.Printf("Error: File or directory not found before opening: %q (%v)", filePath, err)
 		return err
 	}
 
 	// Собираем информацию о файле
 	fileInfo := getFileTypeInfo(filePath)
-	log.Printf("File: %q, Extension: %q, MIME: %q",
-		fileInfo.FileName, fileInfo.Ext, fileInfo.MIMEType)
 
 	// Выбор и запуск приложения
 	appToLaunch := determineAppToLaunch(fileInfo)
@@ -324,7 +289,6 @@ func openFileWithConfiguredApp(filePath string) error {
 	}
 
 	// Fallback
-	log.Printf("No specific rule matched or previous launches failed. Falling back to: %q", appAssociations.FallbackOpener)
 	fmt.Fprintf(os.Stderr, "Info: No specific rule matched for %q (MIME: %q). Falling back to %q...\n",
 		fileInfo.FileName, fileInfo.MIMEType, appAssociations.FallbackOpener)
 
@@ -359,22 +323,18 @@ func determineAppToLaunch(info FileTypeInfo) string {
 	// 1. Проверка по расширению
 	app := getAppByExtension(info.Ext, info.MIMEType)
 	if app != "" {
-		log.Printf("Launching based on extension %q: App=%q", info.Ext, app)
 		if launchApp(app, info.Path) {
 			return app
 		}
-		log.Printf("Launch failed for extension rule. App=%q", app)
 	}
 
 	// 2. Проверка по MIME типу
 	if info.MIMEType != "" {
 		app = getAppByMIME(info.MIMEType)
 		if app != "" {
-			log.Printf("Launching based on MIME %q: App=%q", info.MIMEType, app)
 			if launchApp(app, info.Path) {
 				return app
 			}
-			log.Printf("Launch failed for MIME rule. App=%q", app)
 		}
 	}
 
@@ -442,7 +402,6 @@ func getAppByMIME(mimeType string) string {
 func getMimeType(filePath string) string {
 	xdgMimePath, err := exec.LookPath("xdg-mime")
 	if err != nil {
-		log.Println("Warning: 'xdg-mime' command not found, cannot determine MIME type.")
 		return ""
 	}
 
@@ -452,7 +411,6 @@ func getMimeType(filePath string) string {
 	cmd := exec.CommandContext(ctx, xdgMimePath, "query", "filetype", filePath)
 	output, err := cmd.Output()
 	if err != nil {
-		log.Printf("Warning: xdg-mime failed for %q: %v", filePath, err)
 		return ""
 	}
 
@@ -463,7 +421,6 @@ func getMimeType(filePath string) string {
 func launchApp(appCommand string, filePath string) bool {
 	parts := strings.Fields(appCommand)
 	if len(parts) == 0 {
-		log.Printf("Error: Empty application command provided.")
 		fmt.Fprintf(os.Stderr, "Error: Invalid empty application command.\n")
 		return false
 	}
@@ -473,15 +430,11 @@ func launchApp(appCommand string, filePath string) bool {
 
 	appPath, err := exec.LookPath(appName)
 	if err != nil {
-		log.Printf("Error: Application command not found in PATH: %q", appName)
 		fmt.Fprintf(os.Stderr, "Error: Application command not found in PATH: %q\n", appName)
 		return false
 	}
-	log.Printf("Found application %q at %q", appName, appPath)
 
 	finalArgs := append(appArgs, filePath)
-	log.Printf("Launching: %s %v", appPath, finalArgs)
-
 	cmd := exec.Command(appPath, finalArgs...)
 
 	// Установка группы процесса для предотвращения наследования сигналов
@@ -491,11 +444,9 @@ func launchApp(appCommand string, filePath string) bool {
 	// На данный момент оставляем без установки, что означает наследование атрибутов процесса
 
 	if err := cmd.Start(); err != nil {
-		log.Printf("Error starting application %q for file %q: %v", appCommand, filePath, err)
 		fmt.Fprintf(os.Stderr, "Error starting application %q for file %q: %v\n", appCommand, filePath, err)
 		return false
 	}
 
-	log.Printf("Application %q launched successfully in background (PID: %d)", appCommand, cmd.Process.Pid)
 	return true
 }
