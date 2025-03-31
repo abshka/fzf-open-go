@@ -23,10 +23,10 @@ import (
 
 // DefaultConfig содержит конфигурационные константы
 type DefaultConfig struct {
-	Terminal     string // Терминал для запуска fzf
-	StartingDir  string // Стартовая директория для fzf
-	WinTitleFlag string // Флаг терминала для установки заголовка окна
-	WinTitle     string // Заголовок окна терминала для fzf
+	Terminal     string
+	StartingDir  string
+	WinTitleFlag string
+	WinTitle     string
 }
 
 // AppAssociations содержит ассоциации приложений с типами файлов
@@ -64,22 +64,22 @@ const (
 var (
 	// Основные настройки
 	defaultConfig = DefaultConfig{
-		Terminal:     "alacritty",
+		Terminal:     "alacritty", // ЗДЕСЬ УКАЖИТЕ ВАШ ТЕРМИНАЛ
 		StartingDir:  "~",
 		WinTitleFlag: "--title",
 		WinTitle:     "fzf-open-run",
 	}
 
-	// Ассоциации приложений
+	// Ассоциации приложений - ИЗМЕНИТЕ ЗНАЧЕНИЯ НА СВОИ ПРОГРАММЫ
 	appAssociations = AppAssociations{
-		TextEditor:        "zeditor",
-		PDFViewer:         "zathura",
-		ImageViewer:       "eog",
-		VideoPlayer:       "vlc",
-		SpreadsheetEditor: "wps",
-		WebBrowser:        "thorium-browser",
-		DocxViewer:        "wps",
-		FallbackOpener:    "xdg-open",
+		TextEditor:        "zeditor",         // ЗДЕСЬ УКАЖИТЕ СВОЙ ТЕКСТОВЫЙ РЕДАКТОР
+		PDFViewer:         "zathura",         // ЗДЕСЬ УКАЖИТЕ СВОЙ ПРОСМОТРЩИК PDF
+		ImageViewer:       "eog",             // ЗДЕСЬ УКАЖИТЕ СВОЙ ПРОСМОТРЩИК ИЗОБРАЖЕНИЙ
+		VideoPlayer:       "vlc",             // ЗДЕСЬ УКАЖИТЕ СВОЙ ВИДЕОПЛЕЕР
+		SpreadsheetEditor: "wps",             // ЗДЕСЬ УКАЖИТЕ СВОЙ РЕДАКТОР ТАБЛИЦ
+		WebBrowser:        "thorium-browser", // ЗДЕСЬ УКАЖИТЕ СВОЙ ВЕБ-БРАУЗЕР
+		DocxViewer:        "wps",             // ЗДЕСЬ УКАЖИТЕ СВОЙ ПРОСМОТРЩИК DOCX
+		FallbackOpener:    "xdg-open",        // ЗАПАСНОЙ ОТКРЫВАТЕЛЬ ФАЙЛОВ
 	}
 
 	// Временный файл для вывода fzf
