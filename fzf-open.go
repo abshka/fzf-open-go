@@ -73,7 +73,6 @@ type Config struct {
 	Terminal    string
 	StartingDir string
 	SpawnTerm   bool // Управляется флагом -n
-	ForceTermUI bool // Принудительно использовать TUI-режим в терминале
 	NoAutoClose bool // Флаг для предотвращения автоматического закрытия
 }
 
@@ -89,14 +88,11 @@ func main() {
 	}
 	cfg.StartingDir = startingDir
 
-	// Проверка запуска из терминала
-	isTerminal := isRunningInTerminal()
-
 	// Получение пути через fzf
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	selectedPath, err := getPathViaFZF(ctx, cfg, isTerminal)
+	selectedPath, err := getPathViaFZF(ctx, cfg)
 	if err != nil {
 		waitForUserIfNoAutoClose(cfg)
 		os.Exit(0)
@@ -124,29 +120,18 @@ func waitForUserIfNoAutoClose(cfg *Config) {
 	}
 }
 
-// isRunningInTerminal проверяет, запущена ли программа в терминале
-func isRunningInTerminal() bool {
-	fileInfo, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return (fileInfo.Mode() & os.ModeCharDevice) != 0
-}
-
 // initializeAndParseFlags устанавливает дефолты и читает флаги
 func initializeAndParseFlags() *Config {
 	cfg := &Config{
 		Terminal:    defaultConfig.Terminal,
 		StartingDir: defaultConfig.StartingDir,
 		SpawnTerm:   false,
-		ForceTermUI: false,
 		NoAutoClose: false,
 	}
 
 	flag.BoolVar(&cfg.SpawnTerm, "n", cfg.SpawnTerm, "Spawn fzf in a new terminal window")
 	flag.StringVar(&cfg.StartingDir, "d", cfg.StartingDir, "Starting directory for fzf")
 	flag.StringVar(&cfg.Terminal, "t", cfg.Terminal, "Terminal emulator command")
-	flag.BoolVar(&cfg.ForceTermUI, "f", cfg.ForceTermUI, "Force terminal UI mode even when running outside terminal")
 	flag.BoolVar(&cfg.NoAutoClose, "k", cfg.NoAutoClose, "Keep window open (don't auto-close)")
 
 	flag.Parse()
@@ -169,7 +154,7 @@ func expandPath(path string) (string, error) {
 }
 
 // getPathViaFZF запускает fzf и возвращает выбранный абсолютный путь
-func getPathViaFZF(ctx context.Context, cfg *Config, isTerminal bool) (string, error) {
+func getPathViaFZF(ctx context.Context, cfg *Config) (string, error) {
 	// Проверка StartingDir
 	info, err := os.Stat(cfg.StartingDir)
 	if err != nil || !info.IsDir() {
@@ -193,10 +178,7 @@ func getPathViaFZF(ctx context.Context, cfg *Config, isTerminal bool) (string, e
 
 	var cmd *exec.Cmd
 
-	// Определяем режим запуска
-	shouldUseNewTerminal := (!isTerminal && !cfg.ForceTermUI) || cfg.SpawnTerm
-
-	if shouldUseNewTerminal {
+	if cfg.SpawnTerm {
 		// Запуск в новом терминале
 		args := []string{
 			defaultConfig.WinTitleFlag,
@@ -280,15 +262,26 @@ func openFileWithConfiguredApp(filePath string) error {
 	// Собираем информацию о файле
 	fileInfo := getFileTypeInfo(filePath)
 
-	// Выбор и запуск приложения
-	appToLaunch := determineAppToLaunch(fileInfo)
+	// Выбор и запуск приложения только один раз через определение приложения
+	// Используем только одно из определений - по расширению или по MIME типу, но не оба
+	var appToLaunch string
+
+	// Сначала пробуем по расширению
+	appToLaunch = getAppByExtension(fileInfo.Ext, fileInfo.MIMEType)
+
+	// Если по расширению не нашли, пробуем по MIME
+	if appToLaunch == "" && fileInfo.MIMEType != "" {
+		appToLaunch = getAppByMIME(fileInfo.MIMEType)
+	}
+
+	// Запускаем приложение, если его удалось определить
 	if appToLaunch != "" {
 		if launchApp(appToLaunch, filePath) {
 			return nil
 		}
 	}
 
-	// Fallback
+	// Fallback если не определили приложение или не смогли запустить
 	fmt.Fprintf(os.Stderr, "Info: No specific rule matched for %q (MIME: %q). Falling back to %q...\n",
 		fileInfo.FileName, fileInfo.MIMEType, appAssociations.FallbackOpener)
 
