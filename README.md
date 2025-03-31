@@ -1,6 +1,6 @@
 # fzf-open-go
 
-![License](https://img.shields.io/github/license/abshka/fzf-open-go)
+![GitHub License](https://img.shields.io/github/license/abshka/fzf-open-go)
 ![Go Version](https://img.shields.io/badge/go-1.18%2B-blue)
 
 `fzf-open-go` - это утилита командной строки, которая использует [fzf](https://github.com/junegunn/fzf) (fuzzy finder) для интерактивного выбора и открытия файлов в соответствующих приложениях. Программа автоматически определяет тип файла и открывает его в подходящем приложении на основе расширения файла и/или MIME-типа.
