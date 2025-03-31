@@ -10,6 +10,8 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
@@ -39,6 +41,26 @@ type AppAssociations struct {
 	FallbackOpener    string
 }
 
+// Используем константы для часто используемых MIME типов
+const (
+	mimeTextPrefix        = "text/"
+	mimeApplicationScript = "application/x-shellscript"
+	mimeApplicationJS     = "application/javascript"
+	mimeApplicationJSON   = "application/json"
+	mimeApplicationXML    = "application/xml"
+	mimeInodeEmpty        = "inode/x-empty"
+	mimeImagePrefix       = "image/"
+	mimeVideoPrefix       = "video/"
+	mimeAudioPrefix       = "audio/"
+	mimePDF               = "application/pdf"
+	mimeWordDocx          = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	mimeWordDoc           = "application/msword"
+	mimeODT               = "application/vnd.oasis.opendocument.text"
+	mimeODS               = "application/vnd.oasis.opendocument.spreadsheet"
+	mimeExcel             = "application/vnd.ms-excel"
+	mimeExcelX            = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
 var (
 	// Основные настройки
 	defaultConfig = DefaultConfig{
@@ -62,6 +84,10 @@ var (
 
 	// Временный файл для вывода fzf
 	tmpFzfOutput = "/tmp/fzf-open"
+
+	// Кэш для результатов LookPath
+	pathCache     = make(map[string]string)
+	pathCacheLock sync.RWMutex
 )
 
 // ========================================================================
@@ -200,7 +226,8 @@ func getPathViaFZF(ctx context.Context, cfg *Config) (string, error) {
 
 	// Обработка ошибок запуска cmd
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			if exitErr.ExitCode() == 130 {
 				return "", nil
 			}
@@ -303,35 +330,18 @@ func getFileTypeInfo(filePath string) FileTypeInfo {
 		extLower = ""
 	}
 
+	// Получаем MIME тип только если это не директория
+	var mimeType string
+	if fi, err := os.Stat(filePath); err == nil && !fi.IsDir() {
+		mimeType = getMimeType(filePath)
+	}
+
 	return FileTypeInfo{
 		Path:     filePath,
 		FileName: fileName,
 		Ext:      extLower,
-		MIMEType: getMimeType(filePath),
+		MIMEType: mimeType,
 	}
-}
-
-// determineAppToLaunch определяет приложение для открытия файла
-func determineAppToLaunch(info FileTypeInfo) string {
-	// 1. Проверка по расширению
-	app := getAppByExtension(info.Ext, info.MIMEType)
-	if app != "" {
-		if launchApp(app, info.Path) {
-			return app
-		}
-	}
-
-	// 2. Проверка по MIME типу
-	if info.MIMEType != "" {
-		app = getAppByMIME(info.MIMEType)
-		if app != "" {
-			if launchApp(app, info.Path) {
-				return app
-			}
-		}
-	}
-
-	return ""
 }
 
 // getAppByExtension определяет приложение по расширению файла
@@ -350,12 +360,12 @@ func getAppByExtension(ext, mimeType string) string {
 	case "htm", "html", "xhtml":
 		return appAssociations.WebBrowser
 	case "txt", "md", "markdown", "sh", "bash", "zsh", "fish", "py", "rb", "js", "jsx", "ts", "tsx", "c", "cpp", "h", "hpp", "java", "go", "rs", "php", "pl", "lua", "sql", "json", "yaml", "yml", "toml", "xml", "css", "scss", "less", "conf", "cfg", "log", "ini", "desktop", "service", "env", "gitignore", "dockerfile", "":
-		if ext == "" || strings.HasPrefix(mimeType, "text/") ||
-			mimeType == "application/x-shellscript" ||
-			mimeType == "application/javascript" ||
-			mimeType == "application/json" ||
-			mimeType == "application/xml" ||
-			mimeType == "inode/x-empty" ||
+		if ext == "" || strings.HasPrefix(mimeType, mimeTextPrefix) ||
+			mimeType == mimeApplicationScript ||
+			mimeType == mimeApplicationJS ||
+			mimeType == mimeApplicationJSON ||
+			mimeType == mimeApplicationXML ||
+			mimeType == mimeInodeEmpty ||
 			mimeType == "" {
 			return appAssociations.TextEditor
 		}
@@ -366,26 +376,26 @@ func getAppByExtension(ext, mimeType string) string {
 // getAppByMIME определяет приложение по MIME типу
 func getAppByMIME(mimeType string) string {
 	switch {
-	case strings.HasPrefix(mimeType, "text/"),
-		mimeType == "application/x-shellscript",
-		mimeType == "application/javascript",
-		mimeType == "application/json",
-		mimeType == "application/xml",
-		mimeType == "inode/x-empty":
+	case strings.HasPrefix(mimeType, mimeTextPrefix),
+		mimeType == mimeApplicationScript,
+		mimeType == mimeApplicationJS,
+		mimeType == mimeApplicationJSON,
+		mimeType == mimeApplicationXML,
+		mimeType == mimeInodeEmpty:
 		return appAssociations.TextEditor
-	case strings.HasPrefix(mimeType, "image/"):
+	case strings.HasPrefix(mimeType, mimeImagePrefix):
 		return appAssociations.ImageViewer
-	case strings.HasPrefix(mimeType, "video/"), strings.HasPrefix(mimeType, "audio/"):
+	case strings.HasPrefix(mimeType, mimeVideoPrefix), strings.HasPrefix(mimeType, mimeAudioPrefix):
 		return appAssociations.VideoPlayer
-	case mimeType == "application/pdf":
+	case mimeType == mimePDF:
 		return appAssociations.PDFViewer
-	case mimeType == "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-		mimeType == "application/msword",
-		mimeType == "application/vnd.oasis.opendocument.text":
+	case mimeType == mimeWordDocx,
+		mimeType == mimeWordDoc,
+		mimeType == mimeODT:
 		return appAssociations.DocxViewer
-	case mimeType == "application/vnd.oasis.opendocument.spreadsheet",
-		mimeType == "application/vnd.ms-excel",
-		mimeType == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+	case mimeType == mimeODS,
+		mimeType == mimeExcel,
+		mimeType == mimeExcelX:
 		return appAssociations.SpreadsheetEditor
 	}
 	return ""
@@ -393,7 +403,7 @@ func getAppByMIME(mimeType string) string {
 
 // getMimeType получает MIME тип файла с помощью xdg-mime
 func getMimeType(filePath string) string {
-	xdgMimePath, err := exec.LookPath("xdg-mime")
+	xdgMimePath, err := cachedLookPath("xdg-mime")
 	if err != nil {
 		return ""
 	}
@@ -410,6 +420,29 @@ func getMimeType(filePath string) string {
 	return strings.TrimSpace(string(output))
 }
 
+// cachedLookPath кэширует результаты exec.LookPath для улучшения производительности
+func cachedLookPath(name string) (string, error) {
+	pathCacheLock.RLock()
+	path, ok := pathCache[name]
+	pathCacheLock.RUnlock()
+
+	if ok {
+		return path, nil
+	}
+
+	// Если не найдено в кэше, ищем и добавляем
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return "", err
+	}
+
+	pathCacheLock.Lock()
+	pathCache[name] = path
+	pathCacheLock.Unlock()
+
+	return path, nil
+}
+
 // launchApp запускает приложение в фоне
 func launchApp(appCommand string, filePath string) bool {
 	parts := strings.Fields(appCommand)
@@ -421,7 +454,7 @@ func launchApp(appCommand string, filePath string) bool {
 	appName := parts[0]
 	appArgs := parts[1:]
 
-	appPath, err := exec.LookPath(appName)
+	appPath, err := cachedLookPath(appName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Application command not found in PATH: %q\n", appName)
 		return false
@@ -432,9 +465,7 @@ func launchApp(appCommand string, filePath string) bool {
 
 	// Установка группы процесса для предотвращения наследования сигналов
 	// Отключаем привязку к родительскому процессу
-	// Здесь должен быть код, зависящий от платформы, для правильной установки SysProcAttr
-	// В Linux это будет syscall.SysProcAttr{Setpgid: true}, но нужна правильная реализация для каждой ОС
-	// На данный момент оставляем без установки, что означает наследование атрибутов процесса
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error starting application %q for file %q: %v\n", appCommand, filePath, err)
