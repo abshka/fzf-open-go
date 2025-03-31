@@ -506,58 +506,6 @@ func openFileWithConfiguredApp(filePath string) error {
 	return nil
 }
 
-// getFileTypeInfo собирает информацию о файле - оставлено для обратной совместимости
-func getFileTypeInfo(filePath string) FileTypeInfo {
-	fileName := filepath.Base(filePath)
-	extWithDot := filepath.Ext(fileName)
-	extLower := strings.ToLower(strings.TrimPrefix(extWithDot, "."))
-
-	if strings.HasPrefix(fileName, ".") && extWithDot == "" {
-		extLower = ""
-	}
-
-	var mimeType string
-	if fi, err := os.Stat(filePath); err == nil && !fi.IsDir() {
-		mimeType = getMimeType(filePath)
-	}
-
-	return FileTypeInfo{
-		Path:     filePath,
-		FileName: fileName,
-		Ext:      extLower,
-		MIMEType: mimeType,
-	}
-}
-
-// getAppByExtension определяет приложение по расширению файла - оставлено для обратной совместимости
-func getAppByExtension(ext, mimeType string) string {
-	switch ext {
-	case "pdf":
-		return appAssociations.PDFViewer
-	case "docx", "doc":
-		return appAssociations.DocxViewer
-	case "png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "ico", "tif", "tiff":
-		return appAssociations.ImageViewer
-	case "flv", "avi", "mov", "mp4", "mkv", "webm", "wmv", "mpeg", "mpg", "mp3", "ogg", "oga", "wav", "flac", "opus", "aac", "m4a":
-		return appAssociations.VideoPlayer
-	case "csv", "tsv", "ods", "xlsx":
-		return appAssociations.SpreadsheetEditor
-	case "htm", "html", "xhtml":
-		return appAssociations.WebBrowser
-	case "txt", "md", "markdown", "sh", "bash", "zsh", "fish", "py", "rb", "js", "jsx", "ts", "tsx", "c", "cpp", "h", "hpp", "java", "go", "rs", "php", "pl", "lua", "sql", "json", "yaml", "yml", "toml", "xml", "css", "scss", "less", "conf", "cfg", "log", "ini", "desktop", "service", "env", "gitignore", "dockerfile", "":
-		if ext == "" || strings.HasPrefix(mimeType, mimeTextPrefix) ||
-			mimeType == mimeApplicationScript ||
-			mimeType == mimeApplicationJS ||
-			mimeType == mimeApplicationJSON ||
-			mimeType == mimeApplicationXML ||
-			mimeType == mimeInodeEmpty ||
-			mimeType == "" {
-			return appAssociations.TextEditor
-		}
-	}
-	return ""
-}
-
 // getAppByMIME определяет приложение по MIME типу
 func getAppByMIME(mimeType string) string {
 	switch {
